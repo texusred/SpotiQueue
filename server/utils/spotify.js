@@ -315,7 +315,8 @@ function noteRateLimit(error) {
   const until = Date.now() + waitMs;
   if (until > rateLimitedUntil) {
     rateLimitedUntil = until;
-    console.warn(`Spotify rate limited (429); pausing playback polling for ${Math.round(waitMs / 1000)}s`);
+    const resumeAt = new Date(until).toLocaleTimeString('en-GB');
+    console.warn(`Spotify rate limited (429); pausing playback polling for ${Math.round(waitMs / 1000)}s (until ${resumeAt})`);
   }
 }
 
@@ -334,7 +335,9 @@ function createCachedFetch(fetcher, ttl, onUnavailable) {
 
     if (now < rateLimitedUntil) {
       if (hasValue && age < STALE_MAX_MS) return state.value;
-      return onUnavailable(new Error('Spotify rate limited'));
+      const err = new Error('Spotify rate limited');
+      err.rateLimited = true;
+      return onUnavailable(err);
     }
 
     if (!state.inFlight) {
@@ -366,8 +369,10 @@ const getNowPlaying = createCachedFetch(async () => {
   lastKnownPlaying = Boolean(track?.is_playing);
   return track;
 }, NOW_PLAYING_TTL_MS, () => null);
-const getQueue = createCachedFetch(fetchQueueUncached, QUEUE_TTL_MS, () => {
-  throw new Error('Failed to get queue');
+const getQueue = createCachedFetch(fetchQueueUncached, QUEUE_TTL_MS, (cause) => {
+  const err = new Error('Failed to get queue');
+  if (cause?.rateLimited) err.rateLimited = true;
+  throw err;
 });
 
 // Adding a track changes the queue; make the next read fetch fresh data.

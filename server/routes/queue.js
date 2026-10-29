@@ -243,7 +243,8 @@ router.get('/current', async (req, res) => {
 
     res.json(queue);
   } catch (error) {
-    console.error('Queue error:', error);
+    // While Spotify is rate limiting, spotify.js already logged one warning; skip the stack-trace spam
+    if (!error.rateLimited) console.error('Queue error:', error);
 
     if (queueCache) {
       return res.json(queueCache);
