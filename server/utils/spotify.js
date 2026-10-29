@@ -187,7 +187,7 @@ function parseSpotifyUrl(url) {
 }
 
 // Get currently playing track (requires user authorization)
-async function getNowPlaying() {
+async function fetchNowPlayingUncached() {
   const token = await getAccessToken();
   const userId = process.env.SPOTIFY_USER_ID;
   
@@ -225,12 +225,13 @@ async function getNowPlaying() {
       accessToken = null;
       tokenExpiresAt = 0;
     }
+    if (error.response?.status === 429) throw error;
     return null;
   }
 }
 
 // Add track to queue (requires user authorization)
-async function addToQueue(trackUri) {
+async function addToQueueUncached(trackUri) {
   const token = await getAccessToken();
   
   try {
@@ -256,7 +257,7 @@ async function addToQueue(trackUri) {
 }
 
 // Get current queue
-async function getQueue() {
+async function fetchQueueUncached() {
   const token = await getAccessToken();
 
   try {
@@ -287,9 +288,94 @@ async function getQueue() {
       }))
     };
   } catch (error) {
+    if (error.response?.status === 429) throw error;
     console.error('Error getting queue:', error.response?.data || error.message);
     throw new Error('Failed to get queue');
   }
+}
+
+// --- Shared cache for read-only playback calls (fork addition) -------------
+// Every display screen and guest page polls now-playing/queue. Without sharing,
+// each open client multiplies Spotify API calls and quickly triggers HTTP 429.
+// This gives all callers one short-lived result, merges concurrent requests
+// into a single Spotify call, and honours Retry-After when rate limited,
+// serving the last known result instead of blanking the screens.
+// Shorter while music plays (screens extrapolate progress between refreshes),
+// much longer when idle so an open display doesn't burn requests overnight.
+const NOW_PLAYING_TTL_MS = { playing: 4000, idle: 15000 };
+const QUEUE_TTL_MS = { playing: 10000, idle: 30000 };
+const STALE_MAX_MS = 5 * 60 * 1000; // how long a last-known result may be shown during errors
+const DEFAULT_BACKOFF_MS = 10 * 1000;
+
+let rateLimitedUntil = 0;
+
+function noteRateLimit(error) {
+  const retryAfterSec = parseInt(error.response?.headers?.['retry-after'], 10);
+  const waitMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? retryAfterSec * 1000 : DEFAULT_BACKOFF_MS;
+  const until = Date.now() + waitMs;
+  if (until > rateLimitedUntil) {
+    rateLimitedUntil = until;
+    console.warn(`Spotify rate limited (429); pausing playback polling for ${Math.round(waitMs / 1000)}s`);
+  }
+}
+
+let lastKnownPlaying = false;
+const ttlFor = (ttl) => (lastKnownPlaying ? ttl.playing : ttl.idle);
+
+function createCachedFetch(fetcher, ttl, onUnavailable) {
+  const state = { value: undefined, fetchedAt: 0, inFlight: null };
+
+  async function cachedFetch() {
+    const now = Date.now();
+    const hasValue = state.value !== undefined;
+    const age = now - state.fetchedAt;
+
+    if (hasValue && age < ttlFor(ttl)) return state.value;
+
+    if (now < rateLimitedUntil) {
+      if (hasValue && age < STALE_MAX_MS) return state.value;
+      return onUnavailable(new Error('Spotify rate limited'));
+    }
+
+    if (!state.inFlight) {
+      state.inFlight = fetcher()
+        .then((value) => {
+          state.value = value;
+          state.fetchedAt = Date.now();
+          return value;
+        })
+        .finally(() => { state.inFlight = null; });
+    }
+
+    try {
+      return await state.inFlight;
+    } catch (error) {
+      if (error.response?.status === 429) noteRateLimit(error);
+      if (hasValue && Date.now() - state.fetchedAt < STALE_MAX_MS) return state.value;
+      return onUnavailable(error);
+    }
+  }
+
+  // Next call refetches (keeps the old value as a fallback if that fetch fails)
+  cachedFetch.invalidate = () => { state.fetchedAt = 0; };
+  return cachedFetch;
+}
+
+const getNowPlaying = createCachedFetch(async () => {
+  const track = await fetchNowPlayingUncached();
+  lastKnownPlaying = Boolean(track?.is_playing);
+  return track;
+}, NOW_PLAYING_TTL_MS, () => null);
+const getQueue = createCachedFetch(fetchQueueUncached, QUEUE_TTL_MS, () => {
+  throw new Error('Failed to get queue');
+});
+
+// Adding a track changes the queue; make the next read fetch fresh data.
+async function addToQueue(trackUri) {
+  const result = await addToQueueUncached(trackUri);
+  getQueue.invalidate();
+  getNowPlaying.invalidate();
+  return result;
 }
 
 module.exports = {
