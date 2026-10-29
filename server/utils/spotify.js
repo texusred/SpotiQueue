@@ -301,9 +301,10 @@ async function fetchQueueUncached() {
 // into a single Spotify call, and honours Retry-After when rate limited,
 // serving the last known result instead of blanking the screens.
 // Shorter while music plays (screens extrapolate progress between refreshes),
-// much longer when idle so an open display doesn't burn requests overnight.
-const NOW_PLAYING_TTL_MS = { playing: 4000, idle: 15000 };
-const QUEUE_TTL_MS = { playing: 10000, idle: 30000 };
+// much longer when idle so an always-on kiosk doesn't burn requests overnight.
+// Rough Spotify load: ~750 calls/hour while playing, ~120/hour idle, 0 with no viewers.
+const NOW_PLAYING_TTL_MS = { playing: 6000, idle: 60000 };
+const QUEUE_TTL_MS = { playing: 20000, idle: 60000 };
 const STALE_MAX_MS = 5 * 60 * 1000; // how long a last-known result may be shown during errors
 const DEFAULT_BACKOFF_MS = 10 * 1000;
 

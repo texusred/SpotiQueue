@@ -13,6 +13,23 @@ const POLL_VOTES_MS = 10000
 const POLL_CONFIG_MS = 10000
 const MAX_QUEUE = 20
 
+/**
+ * Run fn now and every `ms`, but skip while the page is hidden (e.g. a kiosk
+ * that blanks the screen) and refresh immediately when it becomes visible.
+ * Returns a cleanup function.
+ */
+function startPolling(fn, ms) {
+  const run = () => { if (!document.hidden) fn() }
+  const onVisible = () => { if (!document.hidden) fn() }
+  run()
+  const interval = setInterval(run, ms)
+  document.addEventListener('visibilitychange', onVisible)
+  return () => {
+    clearInterval(interval)
+    document.removeEventListener('visibilitychange', onVisible)
+  }
+}
+
 export function useDisplayData() {
   const [nowPlaying, setNowPlaying] = useState(null)
   const [upNext, setUpNext] = useState([])
@@ -65,9 +82,8 @@ export function useDisplayData() {
       }
     }
 
-    fetchNowPlaying()
-    const interval = setInterval(fetchNowPlaying, POLL_NOW_PLAYING_MS)
-    return () => { cancelled = true; clearInterval(interval) }
+    const stop = startPolling(fetchNowPlaying, POLL_NOW_PLAYING_MS)
+    return () => { cancelled = true; stop() }
   }, [])
 
   // Queue
@@ -79,9 +95,8 @@ export function useDisplayData() {
         if (!cancelled) setUpNext(res.data?.queue?.slice(0, MAX_QUEUE) ?? [])
       } catch { /* keep last known queue */ }
     }
-    fetchQueue()
-    const interval = setInterval(fetchQueue, POLL_QUEUE_MS)
-    return () => { cancelled = true; clearInterval(interval) }
+    const stop = startPolling(fetchQueue, POLL_QUEUE_MS)
+    return () => { cancelled = true; stop() }
   }, [])
 
   // Public config
@@ -98,9 +113,8 @@ export function useDisplayData() {
         if (!cancelled) setVotingEnabled(false)
       }
     }
-    fetchConfig()
-    const interval = setInterval(fetchConfig, POLL_CONFIG_MS)
-    return () => { cancelled = true; clearInterval(interval) }
+    const stop = startPolling(fetchConfig, POLL_CONFIG_MS)
+    return () => { cancelled = true; stop() }
   }, [])
 
   // Votes (only when enabled)
@@ -113,9 +127,8 @@ export function useDisplayData() {
         if (!cancelled) setVotes(res.data?.votes ?? {})
       } catch { /* non-critical */ }
     }
-    fetchVotes()
-    const interval = setInterval(fetchVotes, POLL_VOTES_MS)
-    return () => { cancelled = true; clearInterval(interval) }
+    const stop = startPolling(fetchVotes, POLL_VOTES_MS)
+    return () => { cancelled = true; stop() }
   }, [votingEnabled])
 
   const appUrl = queueUrl || (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.host}` : '')
